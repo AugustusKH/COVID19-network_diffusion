@@ -4,6 +4,6 @@ This repository collects the source codes used for constructing the COVID-19 pro
 ## Additional relevant article
 If you are interested in network biology and network diffusion, you can read the two articles below:
 
-• First item  
+• [Network Biology](https://www.nature.com/articles/nrg1272)  
 • Second item  
 • Third item  
