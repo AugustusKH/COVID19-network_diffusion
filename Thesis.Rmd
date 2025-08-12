@@ -1,0 +1,966 @@
+---
+title: "Thesis"
+author: "Pakorn Sagulkoo 6380064520"
+date: "12/11/2564"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Practice
+
+1. Library calling
+
+```{r message = FALSE, warning = FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(igraph)
+library(diffusr)
+library(visNetwork)
+library(ggpubr)
+library(UpSetR)
+library(ggVennDiagram)
+```
+
+2. Mapping DEGs symbol names to Ensembl ID
+
+```{r}
+DEG_sym <- read_table("D:/Bioinfor MSc/Thesis/COVID network/R_code/sig_overexp_genes.txt", col_names = FALSE)
+colnames(DEG_sym) <- "symbols"
+head(DEG_sym)
+```
+
+```{r}
+#number of DEGs
+nrow(DEG_sym)
+```
+
+```{r}
+Ensembl_info <- read_table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/STRING/9606.protein.info.v11.5.txt")
+head(Ensembl_info)
+```
+
+```{r}
+nrow(Ensembl_info)
+```
+
+```{r}
+Ensembl_DEGs_all <- Ensembl_info %>%
+  inner_join(DEG_sym, by = c("preferred_name" = "symbols")) %>%
+  select(string_protein_id = "#string_protein_id", symbol = preferred_name)
+  
+Ensembl_DEGs_all
+```
+
+```{r}
+write.csv(Ensembl_DEGs_all, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/EnsemblID_DEGs.csv", sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+```{r}
+Ensembl_DEGs <- Ensembl_info %>%
+  inner_join(DEG_sym, by = c("preferred_name" = "symbols")) %>%
+  select(string_protein_id = "#string_protein_id")
+Ensembl_DEGs
+```
+
+3. Creat a graph from the data frame
+    3.1 Change combined score in STRING to weight
+
+```{r}
+string_df <- read_table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/STRING/9606.protein.links.v11.5.txt")
+head(string_df)
+```
+
+```{r}
+# number of interactions
+nrow(string_df)
+```
+
+```{r}
+network_df <- string_df %>%
+  filter(combined_score >= 900) %>%
+  transmute(v1 = protein1, v2 = protein2, weight = (((combined_score + 1)-900)/100))
+  
+network_df
+```
+
+  3.2 Construct undirected weighted graph
+  
+```{r}
+g <- graph_from_data_frame(network_df[, c("v1", "v2")], directed = FALSE)
+E(g)$weight = network_df$weight
+is.weighted(g)
+is.connected(g)
+is.directed(g)
+is_simple(g)
+```
+  
+```{r}
+# Check weight
+E(g)$weight
+```
+  
+  3.3 Cleaning the graph
+  
+```{r}
+g <- simplify(g, edge.attr.comb="mean") #simplify graph and create a new edge weight from multiple edges weight by mean
+g <- delete.vertices(g, degree(g) == 0)
+```
+
+```{r}
+E(g)$weight
+```
+
+  3.4 Measure how many components
+
+```{r}
+components(g)$no
+```
+
+```{r}
+components(g)$csize
+```
+
+```{r}
+components(g)$membership[1:5]
+```
+
+  3.5 Select the largest component
+  
+```{r}
+largest_id <- which.max(components(g)$csize)
+select_id_node <- V(g)[components(g)$membership == largest_id]
+largest_g <- induced_subgraph(g, select_id_node)
+```
+  
+```{r}
+components(largest_g)$csize
+```
+ 
+```{r}
+#Calculate the number of edges in the largest graph
+gsize(largest_g)
+```
+ 
+  3.6 Save the largest component as a data frame   
+ 
+```{r}
+#Vertices data frame 
+largest_g_df_vertices <- as_data_frame(largest_g, what  = "vertices")
+largest_g_df_vertices
+```
+ 
+```{r}
+#Edges data frame
+largest_g_df_edges <- as_data_frame(largest_g, what  = "edges")
+largest_g_df_edges
+```
+ 
+```{r}
+#Save as a text file
+write.table(largest_g_df_vertices, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/largest_g_df_vertices.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+write.table(largest_g_df_edges, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/largest_g_df_edges.txt", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+ 
+   3.6 Plot graphs to measure topological parameters
+   
+```{r}
+#Average degree
+mean(degree(largest_g))
+```
+```{r}
+#Diameter
+diameter(largest_g, directed = FALSE)
+```
+```{r}
+#Mean shortest path
+mean_distance(largest_g, directed = FALSE, unconnected = FALSE)
+```
+```{r}
+#Average clustering coefficient
+transitivity(largest_g, type = "average")
+```
+
+    ```{r}
+#Creat a data frame
+parameter_df <- as.data.frame(V(largest_g)$name) %>%
+  rename("nodes" = `V(largest_g)$name`) %>%
+  mutate(degree = degree(largest_g)) %>%
+  group_by(degree) %>%
+  mutate(count_degree = n()) %>%
+  ungroup() %>%
+  mutate(prob_degree = count_degree/n(), clustering_coefficient = transitivity(largest_g, vids = nodes, type = "local")) %>%
+  select(-count_degree)
+  
+parameter_df
+```
+
+```{r}
+#Degree distribution
+ggplot(parameter_df, aes(x = degree, y = prob_degree)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Degree distribution", x = "log(degree)", y = "log(p(k))")
+```
+
+```{r}
+# Plot c(k) vs k
+ggplot(parameter_df, aes(x = degree, y = clustering_coefficient)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Clustering coefficient vs degree plot", x = "log(degree)", y = "log(c(k))")
+```
+
+  3.6 Graph visualization
+
+```{r}
+#plot(largest_g, vertex.size = 1, vertex.label = NA)
+```
+
+  3.7 Get adjacency matrix from the graph
+  
+```{r}
+A <- as_adjacency_matrix(largest_g, attr = "weight", sparse = FALSE)
+A[1:10,1:10]
+```
+  
+```{r}
+nrow(A)
+```
+
+```{r}
+nrow(Ensembl_info)
+```
+
+```{r}
+df_from_matrix <- as.data.frame(A, row.names = rownames(A), col.names = TRUE)
+df_from_matrix
+```
+
+```{r}
+write.table(df_from_matrix, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/df_from_matrix.txt", sep = "\t", row.names = TRUE, col.names = TRUE)
+```
+
+4. Set the initial heat diffusion vector
+  4.1 Find Ensembl DEGs are still in the network
+    
+```{r}
+name_A <- as.data.frame(rownames(A))
+colnames(name_A) <- c("nodes")
+#head(name_A)
+seed_nodes_df <- name_A %>%
+  inner_join(Ensembl_DEGs_all, by = c("nodes" = "string_protein_id"))
+#nrow(seed_nodes_df)
+seed_nodes_df
+```
+
+```{r}
+write.csv(seed_nodes_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/seed_nodes_df.csv", sep = "\t", row.names = FALSE, col.names = TRUE)
+```
+
+  4.2 Construct the initial heat diffusion vector
+
+```{r}
+h0 <- replicate(nrow(A), 0)
+#length(h0)
+names(h0) <- rownames(A)
+#h0[1:10]
+seed_nodes <- as.vector(seed_nodes_df$nodes)
+#seed_nodes[1:10]
+h0[seed_nodes] <- 1/length(seed_nodes)
+#sum(h0 > 0)
+```
+
+5. Heat diffusion algorithm
+
+```{r}
+stable_heat_values <- heat.diffusion(h0, A, t = 0.5)
+```
+
+```{r}
+class(stable_heat_values)
+```
+
+```{r}
+diffusion_df <- as.data.frame(stable_heat_values) %>%
+  rename(original_value = V1) %>%
+  mutate(nodes = rownames(A)) %>%
+  inner_join(Ensembl_info, by = c("nodes" = "#string_protein_id")) %>%
+  select(nodes, symbol = preferred_name, original_value) 
+
+diffusion_df
+```
+
+```{r}
+write.table(diffusion_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/diffusion_scores.txt", sep = "\t", quote = F, row.names = FALSE, col.names = TRUE)
+```
+
+  5.1 Find top 15 highest diffusion score
+  
+```{r}
+#Show the heat value of seed nodes
+seed_diffuse_score <- diffusion_df %>%
+  filter(nodes %in% seed_nodes) %>%
+  arrange(desc(original_value))
+
+seed_diffuse_score
+```
+
+```{r}
+#Top 15 highest diffusion score
+high_diffuse_score <- diffusion_df %>%
+  filter(!(nodes %in% seed_nodes)) %>%
+  arrange(desc(original_value)) #%>%
+  #filter(heat_value > 10^(-5))
+
+high_diffuse_score
+```
+
+```{r}
+#Trial create subnetwork from LHD
+filtered_nodes_df <- high_diffuse_score %>%
+  filter(heat_value > 10^(-5)) %>%
+  select(nodes)
+
+filtered_nodes <- as.vector(filtered_nodes_df$nodes)
+high_heat_nodes <- V(largest_g)[filtered_nodes]
+sub_largest_g <- induced_subgraph(largest_g, high_heat_nodes)
+```
+
+```{r}
+#Plot sub network
+plot(sub_largest_g, vertex.size = 5, vertex.label = NA)
+```
+
+```{r}
+names(stable_heat_values) <- rownames(A)
+stable_heat_values[1:6]
+```
+
+6. Screening test
+  6.1 Permutation test 1000 sets
+  
+```{r}
+set.seed(1234) # change
+
+permutation_list <- list()
+# <- 0
+#Start <- (100 * f) + 1
+#Stop <- Start + 99
+for (i in 1:500){
+  random_seed <- sample(rownames(A), length(seed_nodes))
+  h0_permute <- replicate(nrow(A), 0)
+  names(h0_permute) <- rownames(A)
+  h0_permute[random_seed] <- 1/length(random_seed)
+  stable_heat_values_permute <- heat.diffusion(h0_permute, A, t = 0.5)
+  names(stable_heat_values_permute) <- rownames(A)
+  permutation_list[[i]] <- stable_heat_values_permute
+}
+```
+  
+```{r}
+set.seed(1)
+
+for (i in 1:2){
+  random_seed <- sample(rownames(A), length(seed_nodes))
+  h0_permute <- replicate(nrow(A), 0)
+  names(h0_permute) <- rownames(A)
+  h0_permute[random_seed] <- 1/length(random_seed)
+  stable_heat_values_permute <- heat.diffusion(h0_permute, A, t = 0.5)
+  diffusion_df[ , ncol(diffusion_df) + 1] <- stable_heat_values_permute
+  colnames(diffusion_df)[ncol(diffusion_df)] <- paste0("set_", i)
+}
+```
+
+```{r}
+diffusion_df 
+```
+
+```{r}
+set.seed(2)
+
+for (i in 1:2){
+  random_seed <- sample(rownames(A), length(seed_nodes))
+  h0_permute <- replicate(nrow(A), 0)
+  names(h0_permute) <- rownames(A)
+  h0_permute[random_seed] <- 1/length(random_seed)
+  stable_heat_values_permute <- heat.diffusion(h0_permute, A, t = 0.5)
+  diffusion_df[ , ncol(diffusion_df) + 1] <- stable_heat_values_permute
+  colnames(diffusion_df)[ncol(diffusion_df)] <- paste0("set_", i)
+}
+```
+
+```{r}
+diffusion_df
+```
+
+7. Run 1000 permutation test in HPC
+
+8. Import significant permutation results
+
+```{r}
+sig_nodes <- read_table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/permute_sig_nodes.txt")
+```
+
+```{r}
+sig_nodes
+```
+
+```{r}
+write.csv(sig_nodes, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/sig_permute_nodes.csv", sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+9. Construct a subnetwork from the significant nodes
+
+```{r}
+adapt_largest_g_df <- largest_g_df_edges %>%
+  mutate(from = substr(from, 6, nchar(from)), to = substr(to, 6, nchar(to))) %>%
+  select(from, to)
+
+adapt_largest_g_df
+```
+
+```{r}
+adapt_largest_g <- graph_from_data_frame(adapt_largest_g_df[, c("from", "to")], directed = FALSE)
+adapt_largest_g <- simplify(adapt_largest_g) 
+components(adapt_largest_g)$csize
+```
+
+```{r}
+diffuse_subnetwork <- induced_subgraph(adapt_largest_g, sig_nodes$nodes)
+components(diffuse_subnetwork)$csize
+```
+
+```{r}
+plot(diffuse_subnetwork, vertex.size = 5, vertex.label = NA)
+```
+
+10. Select the largest component from the subnetwork
+
+```{r}
+largest_subnetwork_id <- which.max(components(diffuse_subnetwork)$csize)
+select_subnetwork_id_node <- V(diffuse_subnetwork)[components(diffuse_subnetwork)$membership == largest_subnetwork_id]
+largest_subnetwork <- induced_subgraph(diffuse_subnetwork, select_subnetwork_id_node)
+```
+
+```{r}
+#Check edge's number
+gsize(largest_subnetwork)
+```
+
+```{r}
+largest_subnetwork_name <- as.data.frame(V(largest_subnetwork)$name)
+colnames(largest_subnetwork_name) <- "id"
+largest_subnetwork_name
+```
+
+```{r}
+largest_subnetwork_symbol <- largest_subnetwork_name %>%
+  inner_join(sig_nodes, by = c("id" = "nodes"))
+
+largest_subnetwork_symbol
+```
+
+```{r}
+lst_name_subnetwork <- largest_subnetwork_symbol %>%
+  select(id, symbol)
+
+lst_name_subnetwork
+```
+
+```{r}
+V(largest_subnetwork)$symbol <- largest_subnetwork_symbol$symbol
+```
+
+```{r}
+par(mar=c(0,0,0,0))
+plot(largest_subnetwork, vertex.size = 10, vertex.color = "orange", vertex.label = NA, vertex.label.cex = 0.5, vertex.label.color = "black", layout=layout_with_kk, asp = 1, margin = -0.01)
+```
+
+```{r}
+#Prepare data before plotting with visNetwork
+nodes <- data.frame(id = V(largest_subnetwork)$name, label = V(largest_subnetwork)$symbol)
+edges <- as_data_frame(largest_subnetwork, what  = "edges") 
+
+#nodes
+#edges
+
+visNetwork(nodes, edges) %>%
+  visIgraphLayout(layout = "layout_with_kk") 
+```
+
+```{r}
+nodes
+```
+
+11. Find centrality
+
+```{r}
+cent_df <- data.frame(
+  Ensembl_id = V(largest_subnetwork)$name,
+  symbol = V(largest_subnetwork)$symbol,
+  clustering_coefficient = transitivity(largest_subnetwork, type = "local"),
+  degree = degree(largest_subnetwork),
+  closeness = closeness(largest_subnetwork, normalized = TRUE),
+  betweenness = betweenness(largest_subnetwork, normalized = TRUE),
+  eigenvector = eigen_centrality(largest_subnetwork)$vector
+)
+
+rownames(cent_df) <- NULL
+
+cent_df
+```
+
+12. Rank centrality
+
+```{r}
+ranked_cent_df <- cent_df %>%
+  arrange(desc(degree)) %>%
+  mutate(rank_degree = 1:n()) %>%
+  arrange(desc(closeness)) %>%
+  mutate(rank_closeness = 1:n()) %>%
+  arrange(desc(betweenness)) %>%
+  mutate(rank_betweenness = 1:n()) %>%
+  arrange(desc(eigenvector)) %>%
+  mutate(rank_eigenvector = 1:n()) %>%
+  #mutate(overall_score = rank_degree * rank_closeness * rank_betweenness * rank_eigenvector) %>%
+  mutate(rank_score = 1/(rank_degree * rank_closeness * rank_betweenness * rank_eigenvector)) 
+
+ranked_cent_df
+```
+
+```{r}
+topological_df <- ranked_cent_df %>%
+  select(Ensembl_id, symbol, clustering_coefficient, degree, betweenness, closeness, eigenvector, rank_score)
+
+topological_df
+```
+
+```{r}
+write.csv(topological_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/topological_df.csv", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+#Find rank_score percentile
+quan_rank_score <- quantile(ranked_cent_df$rank_score, prob = seq(0, 1, 0.05))
+quan_rank_score
+```
+
+```{r}
+#Select genes having log_score >= 10 percentile
+high_rank_genes <- ranked_cent_df %>%
+  filter(rank_score >= quan_rank_score["90%"]) %>%
+  select(Ensembl_id, symbol, rank_score) %>%
+  arrange(desc(rank_score))
+
+high_rank_genes
+```
+
+13. Find centrality more than 90th percentile
+  13.1 Degree
+
+```{r}
+#Select genes having degree >= 90 percentile
+quan_degree <- quantile(cent_df$degree, prob = seq(0, 1, 0.05))
+
+arrange_degree <- cent_df %>%
+  arrange(desc(degree)) %>%
+  filter(degree >= quan_degree["90%"]) %>%
+  select(Ensembl_id, symbol, degree)
+  
+arrange_degree
+```
+
+  13.2 betweenness
+
+```{r}
+#Select genes having betweenness centrality >= 90 percentile
+quan_betweenness <- quantile(cent_df$betweenness, prob = seq(0, 1, 0.05))
+
+arrange_betweenness <- cent_df %>%
+  arrange(desc(betweenness)) %>%
+  filter(betweenness >= quan_betweenness["90%"]) %>%
+  select(Ensembl_id, symbol, betweenness)
+  
+arrange_betweenness
+```
+
+  13.3 Closeness
+  
+```{r}
+#Select genes having closeness centrality >= 90 percentile
+quan_closeness <- quantile(cent_df$closeness, prob = seq(0, 1, 0.05))
+
+arrange_closeness <- cent_df %>%
+  arrange(desc(closeness)) %>%
+  filter(closeness >= quan_closeness["90%"]) %>%
+  select(Ensembl_id, symbol, closeness)
+  
+arrange_closeness
+```
+  
+  13.4 Eigenvector
+  
+```{r}
+#Select genes having eigenvector centrality >= 90 percentile
+quan_eigenvector <- quantile(cent_df$eigenvector, prob = seq(0, 1, 0.05))
+
+arrange_eigenvector <- cent_df %>%
+  arrange(desc(eigenvector)) %>%
+  filter(eigenvector >= quan_eigenvector["90%"]) %>%
+  select(Ensembl_id, symbol, eigenvector)
+  
+arrange_eigenvector
+```
+
+```{r}
+write.csv(arrange_degree, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/arrange_degree.csv", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+write.csv(arrange_betweenness, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/arrange_betweenness.csv", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+write.csv(arrange_closeness, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/arrange_closeness.csv", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+write.csv(arrange_eigenvector, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/arrange_eigenvector.csv", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+#union(arrange_degree$symbol, arrange_betweenness$symbol, arrange_closeness$symbol, arrange_eigenvector$symbol)
+union_set1 <- union(arrange_degree$symbol, arrange_betweenness$symbol)
+union_set2 <- union(arrange_closeness$symbol, arrange_eigenvector$symbol)
+union(union_set1, union_set2)
+```
+
+```{r}
+intersect_set1 <- intersect(arrange_degree$symbol, arrange_betweenness$symbol)
+intersect_set2 <- intersect(arrange_closeness$symbol, arrange_eigenvector$symbol)
+intersect(intersect_set1, intersect_set2)
+```
+
+```{r}
+intersect(arrange_degree$symbol, arrange_eigenvector$symbol)
+```
+
+```{r}
+#Upset plot
+listInput <- list(Degree = arrange_degree$symbol, Betweenness = arrange_betweenness$symbol, Closeness = arrange_closeness$symbol, Eigenvector = arrange_eigenvector$symbol)
+#png("D:/Bioinfor MSc/Thesis/COVID network/R_code/upset_plot.png")
+upset_plot <- upset(fromList(listInput), 
+      #sets = c("Degree", "Betweenness", "Closeness", "Eigenvector"),
+      #group.by = "sets",
+      point.size = 3, 
+      line.size = 1.2,
+      text.scale = c(2, 2, 2, 2, 2, 2),
+      order.by = "freq", 
+      empty.intersections = "on")
+
+#dev.off()
+upset_plot
+```
+
+```{r}
+options(repr.plot.width=15, repr.plot.height=8)
+
+#Venn diagram
+plot_venn <- function (x, show_intersect, set_color, set_size, label, label_geom, 
+    label_alpha, label_color, label_size, label_percent_digit, 
+    label_txtWidth, edge_lty, edge_size, ...)  {
+    venn <- Venn(x)
+    data <- process_data(venn)
+    p <- ggplot() + geom_sf(aes_string(fill = "count"), data = data@region) + 
+        geom_sf(aes_string(color = "name"), data = data@setEdge, 
+            show.legend = F, lty = edge_lty, size = edge_size, color = set_color) + 
+        geom_sf_text(aes_string(label = "name"), data = data@setLabel, 
+            size = set_size, color = set_color) + theme_void()
+    if (label != "none" & show_intersect == FALSE) {
+        region_label <- data@region %>% dplyr::filter(.data$component == 
+            "region") %>% dplyr::mutate(percent = paste(round(.data$count * 
+            100/sum(.data$count), digits = label_percent_digit), 
+            "%", sep = "")) %>% dplyr::mutate(both = paste(.data$count, 
+            paste0("(", .data$percent, ")"), sep = "\n"))
+        if (label_geom == "label") {
+            p <- p + geom_sf_label(aes_string(label = label), 
+                data = region_label, alpha = label_alpha, color = label_color, 
+                size = label_size, lineheight = 0.85, label.size = NA)
+        }
+        if (label_geom == "text") {
+            p <- p + geom_sf_text(aes_string(label = label), 
+                data = region_label, alpha = label_alpha, color = label_color, 
+                size = label_size, lineheight = 0.85)
+        }
+    }
+    if (show_intersect == TRUE) {
+        items <- data@region %>% dplyr::rowwise() %>% dplyr::mutate(text = stringr::str_wrap(paste0(.data$item, 
+            collapse = " "), width = label_txtWidth)) %>% sf::st_as_sf()
+        label_coord = sf::st_centroid(items$geometry) %>% sf::st_coordinates()
+        p <- ggplot(items) + geom_sf(aes_string(fill = "count")) + 
+            geom_sf_text(aes_string(label = "name"), data = data@setLabel, 
+                inherit.aes = F) + geom_text(aes_string(label = "count", 
+            text = "text"), x = label_coord[, 1], y = label_coord[, 
+            2], show.legend = FALSE) + theme_void()
+        ax <- list(showline = FALSE)
+        p <- plotly::ggplotly(p, tooltip = c("text")) %>% plotly::layout(xaxis = ax, 
+            yaxis = ax)
+    }
+    p
+}
+
+assignInNamespace(x="plot_venn", value=plot_venn, ns="ggVennDiagram")
+
+# List of items
+list_members <- list("Ranking score" = high_rank_genes$symbol, "Betweenness centrality" = arrange_betweenness$symbol, "Degree centrality" = arrange_degree$symbol)
+
+# Labels transparency
+venn_plot <- ggVennDiagram(
+  list_members, 
+  color = "grey", 
+  set_size = 5.5,
+  label_size = 4.5,
+  lwd = 0.8, lty = 1, label_alpha = 0) +
+  scale_x_continuous(expand = expansion(mult = .3)) +
+  #scale_y_continuous(expand = expansion(mult = .05)) +
+  scale_fill_gradient(low = "#F4FAFE", high = "#4981BF") +
+  guides(fill=guide_legend(title="Protein count")) +
+  theme(legend.key.size = unit(1, 'cm'),
+        legend.text=element_text(size=12),
+        legend.title = element_text(size=15)
+        )
+
+venn_plot
+```
+
+```{r}
+ggsave(plot = venn_plot, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/Diffusion method/venn_plot.png", width=8, height=8, dpi = 1000)
+ggsave(plot = venn_plot, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/Diffusion method/venn_plot.tiff", width=8, height=8, dpi = 1000)
+```
+
+14. Network clustering
+
+```{r}
+ceb <- cluster_edge_betweenness(largest_subnetwork)
+class(ceb)
+modularity(ceb)
+```
+```{r}
+cde <- cluster_leading_eigen(largest_subnetwork)
+modularity(cde)
+```
+
+```{r}
+cfg <- cluster_fast_greedy(largest_subnetwork)
+modularity(cfg)
+```
+
+```{r}
+cl <- cluster_louvain(largest_subnetwork)
+modularity(cl)
+```
+
+```{r}
+cw <- cluster_walktrap(largest_subnetwork)
+modularity(cw)
+```
+
+```{r}
+clp <- cluster_label_prop(largest_subnetwork)
+modularity(clp)
+```
+
+```{r}
+ci <- cluster_infomap(largest_subnetwork)
+modularity(ci)
+```
+
+```{r}
+cs <- cluster_spinglass(largest_subnetwork)
+modularity(cs)
+```
+
+```{r}
+co <- cluster_optimal(largest_subnetwork)
+modularity(co)
+```
+
+```{r}
+par(mar=c(0,0,2,0))
+V(largest_subnetwork)$member_cluster <- membership(ceb)
+plot(ceb, largest_subnetwork, vertex.label = V(largest_subnetwork)$member_cluster, vertex.size = 10, main = "Edge Betweenness")
+```
+
+```{r}
+lst_cluster <- split(V(largest_subnetwork)$symbol, membership(ceb))
+lst_cluster
+```
+
+```{r}
+cluster1_df <- as.data.frame(lst_cluster[[1]])
+cluster1_df
+```
+
+```{r}
+cluster2_df <- as.data.frame(lst_cluster[[2]])
+cluster2_df
+```
+
+```{r}
+cluster3_df <- as.data.frame(lst_cluster[[3]])
+cluster3_df
+```
+
+```{r}
+cluster4_df <- as.data.frame(lst_cluster[[4]])
+cluster4_df
+```
+
+```{r}
+cluster5_df <- as.data.frame(lst_cluster[[5]])
+cluster5_df
+```
+
+```{r}
+write.table(cluster1_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/cluster1.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(cluster2_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/cluster2.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(cluster3_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/cluster3.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(cluster4_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/cluster4.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(cluster5_df, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/cluster5.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r}
+lst_all <- V(largest_subnetwork)$symbol
+lst_all
+```
+
+```{r}
+write.table(lst_all, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/results/all_genes.txt", sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r}
+adjacency_largest_subnetwork <- as_adjacency_matrix(largest_subnetwork, sparse = FALSE)
+#adjacency_largest_subnetwork
+```
+
+```{r}
+colname_subnetwork <- colnames(adjacency_largest_subnetwork)
+colname_subnetwork
+```
+
+```{r}
+#MCL clustering
+mcl_subnetwork <- mcl(adjacency_largest_subnetwork, addLoops = TRUE, expansion = 2, inflation = 1.5)
+mcl_subnetwork
+```
+
+```{r}
+#Create clustering df
+clustering_df <- data.frame(
+  id = colname_subnetwork,
+  cluster = mcl_subnetwork$Cluster
+)
+
+clustering_df <- clustering_df %>%
+  mutate(cluster = ifelse(cluster == 0, 1, cluster)) 
+
+clustering_df
+```
+
+```{r}
+nodes3 <- nodes2 %>%
+  inner_join(clustering_df, by = c("id" = "id")) %>%
+  rename(group = cluster) %>%
+  arrange(group)
+
+#nodes3
+
+visNetwork(nodes3, edges, height = "500px", width = "100%") %>%
+  visLayout(randomSeed = 12) %>% # to have always the same network
+  visIgraphLayout(layout = "layout_with_kk") %>%
+  visLegend(width = 0.1, position = "right", main = "Cluster", ncol = 2, zoom = FALSE)
+```
+
+```{r}
+#Topological of subnetwork
+mean(degree(largest_subnetwork))
+diameter(largest_subnetwork, directed = FALSE)
+mean_distance(largest_subnetwork, directed = FALSE, unconnected = FALSE)
+transitivity(largest_subnetwork, type = "average")
+```
+
+```{r}
+transitivity(largest_subnetwork, type = "localaverage")
+```
+
+```{r}
+subnetwork_parameter_df <- as.data.frame(V(largest_subnetwork)$name) %>%
+  rename("nodes" = `V(largest_subnetwork)$name`) %>%
+  mutate(degree = degree(largest_subnetwork)) %>%
+  group_by(degree) %>%
+  mutate(count_degree = n()) %>%
+  ungroup() %>%
+  mutate(prob_degree = count_degree/n(), clustering_coefficient = transitivity(largest_subnetwork, vids = nodes, type = "local")) %>%
+  select(-count_degree)
+  
+subnetwork_parameter_df
+```
+
+```{r}
+#Degree distribution of subnetwork
+degree_distribute_graph <- ggplot(subnetwork_parameter_df, aes(x = degree, y = prob_degree)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +
+  #labs(title = "Degree distribution", x = "log(k)", y = "log(p(k))")
+  labs(x = "log(k)", y = "log(p(k))") +
+  stat_cor(aes(label=..rr.label..), label.x=0.07, label.y=log(0.35), size = 7) +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+degree_distribute_graph
+```
+
+```{r}
+# Plot c(k) vs k in the subnetwork
+clustering_graph <- ggplot(subnetwork_parameter_df, aes(x = degree, y = clustering_coefficient)) +
+  geom_point() +
+  #scale_x_log10() +
+  #scale_y_log10() +
+  geom_smooth(method = "lm", se = FALSE) +
+  #labs(title = "Clustering coefficient vs degree plot", x = "k", y = "c(k)")
+  labs(x = "k", y = "c(k)") +
+  stat_cor(aes(label=..rr.label..), label.x=31.7, label.y=0.92, size = 7) +
+  theme(
+    text = element_text(size = 20),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+        )
+
+clustering_graph
+```
+
+```{r}
+#Save graph
+ggsave(plot = degree_distribute_graph, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/Diffusion method/degree_distribute.png", dpi = 1000)
+ggsave(plot = clustering_graph, file = "D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/Diffusion method/clustering_graph.png", dpi = 1000)
+```
+
+```{r}
+drug_list <- read.table("D:/Bioinfor MSc/Thesis/COVID network/R_code/Results/Drug_list.txt")
+drug_list
+```
+
+```{r}
+#Remove repeatitive rows
+drug_list_remove_repeat <- drug_list %>% distinct()
+drug_list_remove_repeat
+```
+
+
+
+
+
